@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <time.h>
 #include "server.h"
 
 extern client_t clients[MAX_CLIENTS];
@@ -18,7 +19,10 @@ void add_client(int sockfd, const char *username, const char *password) {
 
     if (is_user_online(username)) {
         char *error_msg = "Error: User is already connected\n";
-        send(sockfd, error_msg, strlen(error_msg), 0);
+        if (send(sockfd, error_msg, strlen(error_msg), 0) < 0) {
+            perror("Error sending error message");
+        }
+        usleep(100000);  // 100ms
         close(sockfd);
         pthread_mutex_unlock(&clients_mutex);
         return;
@@ -29,7 +33,10 @@ void add_client(int sockfd, const char *username, const char *password) {
         printf("[DEBUG] User %s exists, checking password...\n", username);
         if (!check_user_password(username, password)) {
             char *error_msg = "Error: Invalid password\n";
-            send(sockfd, error_msg, strlen(error_msg), 0);
+            if (send(sockfd, error_msg, strlen(error_msg), 0) < 0) {
+                perror("Error sending error message");
+            }
+            usleep(100000);  // 100ms
             close(sockfd);
             pthread_mutex_unlock(&clients_mutex);
             return;
@@ -48,49 +55,88 @@ void add_client(int sockfd, const char *username, const char *password) {
             break;
         }
     }
-    if (index != -1) {
-        clients[index].sockfd = sockfd;
-        strcpy(clients[index].username, username);
-        strcpy(clients[index].password, password);
-        clients[index].active = 1;
-        pthread_mutex_init(&clients[index].mutex, NULL);
-        if (index >= client_count) client_count = index + 1;
-        printf("Debug: Added client %s\n", username);
-    } else {
+
+    if (index == -1) {
         char *error_msg = "Error: Server is full\n";
-        send(sockfd, error_msg, strlen(error_msg), 0);
+        if (send(sockfd, error_msg, strlen(error_msg), 0) < 0) {
+            perror("Error sending error message");
+        }
+        usleep(100000);  // 100ms
         close(sockfd);
+        pthread_mutex_unlock(&clients_mutex);
+        return;
     }
+
+    // Thêm client mới
+    clients[index].sockfd = sockfd;
+    strcpy(clients[index].username, username);
+    strcpy(clients[index].password, password);
+    clients[index].active = 1;
+    pthread_mutex_init(&clients[index].mutex, NULL);
+    if (index >= client_count) client_count = index + 1;
+    printf("Debug: Added client %s\n", username);
+
     pthread_mutex_unlock(&clients_mutex);
+
+    // Gửi thông báo thành công sau khi unlock mutex
+    char *success_msg = "Success: Authentication successful\n";
+    if (send(sockfd, success_msg, strlen(success_msg), 0) < 0) {
+        perror("Error sending success message");
+        pthread_mutex_lock(&clients_mutex);
+        clients[index].active = 0;
+        pthread_mutex_unlock(&clients_mutex);
+        close(sockfd);
+        return;
+    }
 }
 
 void remove_client(int client_socket) {
-    pthread_mutex_lock(&clients_mutex);
+    char disconnected_username[MAX_USERNAME] = "";
+    int other_clients[MAX_CLIENTS];
+    int other_count = 0;
     
+    // First, get the username and prepare the message
+    pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].active && clients[i].sockfd == client_socket) {
-            printf("Client %s disconnected\n", clients[i].username);
-            char message[BUFFER_SIZE];
-            snprintf(message, BUFFER_SIZE, "System:all:%s has left the chat\n", clients[i].username);
-            broadcast_message_to_socket(message, client_socket, "all");
+            strncpy(disconnected_username, clients[i].username, MAX_USERNAME - 1);
+            disconnected_username[MAX_USERNAME - 1] = '\0';
             
-            close(clients[i].sockfd);
-            clients[i].active = 0;
-            
-            // Update user list for all clients
+            // Get list of other active clients
             for (int j = 0; j < MAX_CLIENTS; j++) {
                 if (clients[j].active && clients[j].sockfd != client_socket) {
-                    send_user_list(clients[j].sockfd);
+                    other_clients[other_count++] = clients[j].sockfd;
                 }
             }
             
-            // Save updated user list to file
-            save_users();
+            // Mark this client as inactive
+            close(clients[i].sockfd);
+            clients[i].active = 0;  // Chỉ cần đánh dấu là không hoạt động
+            
+            printf("Client %s disconnected\n", disconnected_username);
             break;
         }
     }
-    
     pthread_mutex_unlock(&clients_mutex);
+    
+    // If we found a disconnected client, notify others
+    if (strlen(disconnected_username) > 0) {
+        // Prepare leave message
+        char message[BUFFER_SIZE];
+        snprintf(message, BUFFER_SIZE, "System:all:%s has left the chat\n", disconnected_username);
+        
+        // Send leave notification to other clients
+        for (int i = 0; i < other_count; i++) {
+            if (send(other_clients[i], message, strlen(message), 0) < 0) {
+                printf("Error sending leave notification\n");
+            }
+            // Send updated user list
+            send_user_list(other_clients[i]);
+        }
+        
+        // Save updated user list to file
+        save_users();
+    }
 }
 
 int find_client(const char *username) {
@@ -237,70 +283,101 @@ void register_user(const char *username, const char *password) {
 void *handle_client(void *arg) {
     client_t *client = (client_t *)arg;
     char buffer[BUFFER_SIZE];
-    char username[MAX_USERNAME];
+    char client_username[MAX_USERNAME];
     char password[MAX_PASSWORD];
     char content[BUFFER_SIZE - MAX_USERNAME * 2 - 3];
     char recipient[MAX_USERNAME];
+    char sender[MAX_USERNAME];
     
     // Get username and password
-    memset(username, 0, MAX_USERNAME);
+    memset(client_username, 0, MAX_USERNAME);
     memset(password, 0, MAX_PASSWORD);
     
-    // First receive username
-    int bytes_received = recv(client->sockfd, username, MAX_USERNAME - 1, 0);
-    if (bytes_received <= 0) {
-        remove_client(client->sockfd);
-        pthread_exit(NULL);
+    // Read until newline for username
+    int pos = 0;
+    while (pos < MAX_USERNAME - 1) {
+        int n = recv(client->sockfd, client_username + pos, 1, 0);
+        if (n <= 0) {
+            remove_client(client->sockfd);
+            pthread_exit(NULL);
+        }
+        if (client_username[pos] == '\n') {
+            client_username[pos] = '\0';
+            break;
+        }
+        pos++;
     }
-    username[bytes_received] = '\0';
-    username[strcspn(username, "\r\n")] = 0;
-    printf("[DEBUG] Username received: '%s'\n", username);
-    for (int i = 0; i < strlen(username); i++) printf("%02X ", (unsigned char)username[i]);
-    printf("<END username>\n");
+    client_username[strcspn(client_username, "\r")] = 0;
+    printf("[DEBUG] Username received: '%s'\n", client_username);
     
-    // Then receive password
-    bytes_received = recv(client->sockfd, password, MAX_PASSWORD - 1, 0);
-    if (bytes_received <= 0) {
-        remove_client(client->sockfd);
-        pthread_exit(NULL);
+    // Read until newline for password
+    pos = 0;
+    while (pos < MAX_PASSWORD - 1) {
+        int n = recv(client->sockfd, password + pos, 1, 0);
+        if (n <= 0) {
+            remove_client(client->sockfd);
+            pthread_exit(NULL);
+        }
+        if (password[pos] == '\n') {
+            password[pos] = '\0';
+            break;
+        }
+        pos++;
     }
-    password[bytes_received] = '\0';
-    password[strcspn(password, "\r\n")] = 0;
+    password[strcspn(password, "\r")] = 0;
     printf("[DEBUG] Password received: '%s'\n", password);
-    for (int i = 0; i < strlen(password); i++) printf("%02X ", (unsigned char)password[i]);
-    printf("<END password>\n");
     
     // Gọi add_client để xử lý xác thực và đăng ký user
-    add_client(client->sockfd, username, password);
+    add_client(client->sockfd, client_username, password);
+    
     // Nếu add_client đóng socket (bị từ chối), thì thoát thread
-    if (find_client(username) == -1) {
+    if (find_client(client_username) == -1) {
         pthread_exit(NULL);
     }
     
-    printf("Debug: User %s joined the chat\n", username);
+    printf("Debug: User %s joined the chat\n", client_username);
     
     // Send join message
     char message[BUFFER_SIZE];
-    snprintf(message, BUFFER_SIZE, "System:all:%s has joined the chat\n", username);
+    snprintf(message, BUFFER_SIZE, "System:all:%s has joined the chat\n", client_username);
     broadcast_message_to_socket(message, client->sockfd, "all");
     
     // Send current user list to the new client
     send_user_list(client->sockfd);
     
-    // Update user list for all other clients
+    // Send recent chat history to the new client
+    // First send public chat history
+    send_conversation_history(client->sockfd, "all", client_username);
+    
+    // Then send private chat history with each online user
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i].active && clients[i].sockfd != client->sockfd) {
-            pthread_mutex_unlock(&clients_mutex);
-            send_user_list(clients[i].sockfd);
-            pthread_mutex_lock(&clients_mutex);
+        if (clients[i].active && strcmp(clients[i].username, client_username) != 0) {
+            send_conversation_history(client->sockfd, clients[i].username, client_username);
         }
     }
     pthread_mutex_unlock(&clients_mutex);
     
+    // Update user list for all other clients
+    int other_clients[MAX_CLIENTS];
+    int other_count = 0;
+    
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i].active && clients[i].sockfd != client->sockfd) {
+            other_clients[other_count++] = clients[i].sockfd;
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+    
+    // Send user list to other clients without holding the mutex
+    for (int i = 0; i < other_count; i++) {
+        send_user_list(other_clients[i]);
+    }
+    
     while (1) {
         memset(buffer, 0, BUFFER_SIZE);
-        bytes_received = recv(client->sockfd, buffer, BUFFER_SIZE - 1, 0);
+        int bytes_received = recv(client->sockfd, buffer, BUFFER_SIZE - 1, 0);
         
         if (bytes_received <= 0) {
             remove_client(client->sockfd);
@@ -312,7 +389,7 @@ void *handle_client(void *arg) {
             buffer[bytes_received - 1] = '\0';
         }
         
-        printf("Debug: Received from %s: %s\n", username, buffer);
+        printf("Debug: Received from %s: %s\n", client_username, buffer);
         
         // Handle special commands
         if (strcmp(buffer, "/users") == 0) {
@@ -324,8 +401,8 @@ void *handle_client(void *arg) {
         char *first_colon = strchr(buffer, ':');
         if (first_colon != NULL) {
             *first_colon = '\0';
-            strncpy(username, buffer, MAX_USERNAME - 1);
-            username[MAX_USERNAME - 1] = '\0';
+            strncpy(sender, buffer, MAX_USERNAME - 1);
+            sender[MAX_USERNAME - 1] = '\0';
             
             char *second_colon = strchr(first_colon + 1, ':');
             if (second_colon != NULL) {
@@ -333,19 +410,50 @@ void *handle_client(void *arg) {
                 strncpy(recipient, first_colon + 1, MAX_USERNAME - 1);
                 recipient[MAX_USERNAME - 1] = '\0';
                 
-                // Calculate remaining space for content
-                size_t max_content_len = BUFFER_SIZE - strlen(username) - strlen(recipient) - 3;
-                strncpy(content, second_colon + 1, max_content_len - 1);
-                content[max_content_len - 1] = '\0';
+                // Get the actual message content
+                strncpy(content, second_colon + 1, BUFFER_SIZE - 1);
+                content[BUFFER_SIZE - 1] = '\0';
                 
-                printf("Debug: Parsed message - From: %s, To: %s, Content: %s\n", 
-                       username, recipient, content);
+                printf("Debug: Đã nhận tin nhắn - Từ: %s, Đến: %s, Nội dung: %s\n", 
+                       sender, recipient, content);
                 
-                // Format message with username and recipient
-                snprintf(message, BUFFER_SIZE, "%s:%s:%s\n", username, recipient, content);
+                // Gửi tin nhắn theo định dạng mới: /msg:timestamp:sender:recipient:content
+                char message[BUFFER_SIZE];
+                time_t now = time(NULL);
+                struct tm *t = localtime(&now);
+                char timestamp[20];
+                strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", t);
                 
-                // Send to recipient(s) only, not back to sender
-                broadcast_message(username, content, recipient);
+                // Tạo tin nhắn theo định dạng mới
+                snprintf(message, sizeof(message), "/msg:%s:%s:%s:%s", 
+                        timestamp, sender, recipient, content);
+                
+                // Gửi tin nhắn đến các client phù hợp
+                pthread_mutex_lock(&clients_mutex);
+                for (int i = 0; i < MAX_CLIENTS; i++) {
+                    if (!clients[i].active) continue;
+                    if (strcmp(clients[i].username, sender) == 0) continue;  // Bỏ qua người gửi
+                    
+                    // Nếu là tin nhắn riêng tư, chỉ gửi đến người nhận
+                    if (strcmp(recipient, "all") != 0) {
+                        if (strcmp(clients[i].username, recipient) == 0) {
+                            send(clients[i].sockfd, message, strlen(message), 0);
+                        }
+                    } else {
+                        // Nếu là tin nhắn công khai, gửi đến tất cả mọi người trừ người gửi
+                        send(clients[i].sockfd, message, strlen(message), 0);
+                    }
+                }
+                pthread_mutex_unlock(&clients_mutex);
+                
+                // Lưu tin nhắn vào lịch sử hội thoại
+                server_message_t msg;
+                strncpy(msg.sender, sender, MAX_USERNAME - 1);
+                strncpy(msg.recipient, recipient, MAX_USERNAME - 1);
+                strncpy(msg.content, content, BUFFER_SIZE - 1);
+                strncpy(msg.timestamp, timestamp, sizeof(msg.timestamp));
+                msg.is_private = (strcmp(recipient, "all") != 0);
+                save_conversation(&msg);
             }
         }
         
@@ -353,7 +461,7 @@ void *handle_client(void *arg) {
         if (strncmp(buffer, "/history ", 9) == 0) {
             char *target = buffer + 9;
             if (strlen(target) > 0) {
-                send_conversation_history(client->sockfd, target, username);
+                send_conversation_history(client->sockfd, target, client_username);
             }
             continue;
         }

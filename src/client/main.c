@@ -40,37 +40,86 @@ int main() {
     fgets(password, MAX_PASSWORD, stdin);
     password[strcspn(password, "\n")] = 0;
     
-    // Create socket
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        error("Error creating socket");
+    // Authentication loop
+    while (1) {
+        // Create socket
+        sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (sockfd < 0) {
+            error("Error creating socket");
+        }
+        
+        // Initialize server address
+        memset(&serv_addr, 0, sizeof(serv_addr));
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = htons(SERVER_PORT);
+        
+        if (inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr) <= 0) {
+            error("Invalid address");
+        }
+        
+        // Connect to server
+        if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+            error("Connection failed");
+        }
+        
+        // Send username first
+        if (send(sockfd, my_username, strlen(my_username), 0) < 0) {
+            close(sockfd);
+            error("Error sending username");
+        }
+        send(sockfd, "\n", 1, 0);  // Send newline to mark end of username
+        
+        // Send password
+        if (send(sockfd, password, strlen(password), 0) < 0) {
+            close(sockfd);
+            error("Error sending password");
+        }
+        send(sockfd, "\n", 1, 0);  // Send newline to mark end of password
+
+        // Wait for server response
+        char response[BUFFER_SIZE];
+        int n = recv(sockfd, response, BUFFER_SIZE - 1, 0);
+        
+        // If connection closed by server (n = 0) or error (n < 0)
+        if (n <= 0) {
+            close(sockfd);
+            // If server closed connection, it means authentication failed
+            // Try again with new password
+            printf("Authentication failed. Please try again.\n");
+            printf("Enter password: ");
+            fgets(password, MAX_PASSWORD, stdin);
+            password[strcspn(password, "\n")] = 0;
+            continue;
+        }
+
+        response[n] = '\0';
+        
+        // Check server response
+        if (strncmp(response, "Error:", 6) == 0) {
+            // Authentication failed
+            printf("%s", response);  // Print error message from server
+            
+            if (strstr(response, "Invalid password") != NULL) {
+                // Password was wrong, ask for password again
+                close(sockfd);
+                printf("Enter password: ");
+                fgets(password, MAX_PASSWORD, stdin);
+                password[strcspn(password, "\n")] = 0;
+                continue;
+            } else if (strstr(response, "User is already connected") != NULL) {
+                // User is already online, exit
+                close(sockfd);
+                error("User is already connected");
+            } else {
+                // Other error, exit
+                close(sockfd);
+                error(response);
+            }
+        } else {
+            // Authentication successful
+            break;
+        }
     }
-    
-    // Initialize server address
-    memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(SERVER_PORT);
-    
-    if (inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr) <= 0) {
-        error("Invalid address");
-    }
-    
-    // Connect to server
-    if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        error("Connection failed");
-    }
-    
-    // Send username first
-    if (send(sockfd, my_username, strlen(my_username), 0) < 0) {
-        error("Error sending username");
-    }
-    send(sockfd, "\n", 1, 0);  // Send newline to mark end of username
-    
-    // Send password
-    if (send(sockfd, password, strlen(password), 0) < 0) {
-        error("Error sending password");
-    }
-    send(sockfd, "\n", 1, 0);  // Send newline to mark end of password
     
     // Print welcome message
     printf("\n=== Welcome to Chat ===\n");

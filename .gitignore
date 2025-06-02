@@ -3,3 +3,4 @@ server.out
 *.o
 users.txt
 conversations.txt
+conversations/

@@ -93,7 +93,8 @@ void broadcast_message(const char *sender, const char *content, const char *reci
     
     // Send message to clients
     char message[BUFFER_SIZE + MAX_USERNAME * 2];
-    snprintf(message, sizeof(message), "%s:%s:%s", sender, recipient, content);
+    snprintf(message, sizeof(message), "/msg:%s:%s:%s:%s", 
+             msg.timestamp, sender, recipient, content);
     
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].active) {
@@ -118,37 +119,78 @@ void broadcast_message(const char *sender, const char *content, const char *reci
 void send_conversation_history(int client_sock, const char *target, const char *username) {
     pthread_mutex_lock(&conversations_mutex);
     
+    printf("Debug: Sending conversation history for %s to user %s\n", target, username);
+    
     // Find conversation
     server_conversation_t *conv = NULL;
     for (int i = 0; i < conversation_count; i++) {
-        if (strcmp(conversations[i].participant1, target) == 0 ||
-            strcmp(conversations[i].participant2, target) == 0) {
-            conv = &conversations[i];
-            break;
+        // Cho chat công khai, chỉ cần kiểm tra participant1
+        if (strcmp(target, "all") == 0) {
+            if (strcmp(conversations[i].participant1, "all") == 0) {
+                conv = &conversations[i];
+                printf("Debug: Found public conversation with %d messages\n", conv->message_count);
+                break;
+            }
+        } else {
+            // Cho chat riêng, kiểm tra cả hai participant
+            if ((strcmp(conversations[i].participant1, target) == 0) ||
+                (strcmp(conversations[i].participant2, target) == 0)) {
+                conv = &conversations[i];
+                printf("Debug: Found private conversation with %d messages\n", conv->message_count);
+                break;
+            }
         }
     }
     
     if (conv != NULL) {
+        // Gửi header với dấu xuống dòng
         char header[BUFFER_SIZE];
-        snprintf(header, sizeof(header), "/history:%s:", target);
-        send(client_sock, header, strlen(header), 0);
+        snprintf(header, sizeof(header), "/history:%s\n", target);
+        printf("Debug: Sending header: %s", header);
+        if (send(client_sock, header, strlen(header), 0) < 0) {
+            printf("Error: Failed to send history header\n");
+            pthread_mutex_unlock(&conversations_mutex);
+            return;
+        }
         
-        for (int i = 0; i < conv->message_count; i++) {
-            // Use a larger buffer to avoid truncation
+        // Tính toán start_index để chỉ lấy 5 tin nhắn gần nhất
+        int start_index = (conv->message_count > 5) ? (conv->message_count - 5) : 0;
+        printf("Debug: Sending messages from index %d to %d\n", start_index, conv->message_count - 1);
+        
+        // Gửi từng tin nhắn, bắt đầu từ start_index
+        for (int i = start_index; i < conv->message_count; i++) {
             char message[BUFFER_SIZE * 2];
             if (conv->messages[i].is_private) {
-                snprintf(message, sizeof(message), "[%s] %s (private to %s): %s\n",
-                        conv->messages[i].timestamp, conv->messages[i].sender,
-                        conv->messages[i].recipient, conv->messages[i].content);
+                // Tin nhắn riêng tư: chỉ gửi nếu người dùng là người gửi hoặc người nhận
+                if (strcmp(username, conv->messages[i].sender) == 0 ||
+                    strcmp(username, conv->messages[i].recipient) == 0) {
+                    snprintf(message, sizeof(message), "/msg:%s:%s:%s:%s\n",
+                            conv->messages[i].timestamp,
+                            conv->messages[i].sender,
+                            conv->messages[i].recipient,
+                            conv->messages[i].content);
+                    printf("Debug: Sending private message: %s", message);
+                    if (send(client_sock, message, strlen(message), 0) < 0) {
+                        printf("Error: Failed to send private message\n");
+                    }
+                }
             } else {
-                snprintf(message, sizeof(message), "[%s] %s: %s\n",
-                        conv->messages[i].timestamp, conv->messages[i].sender,
+                // Tin nhắn công khai: gửi tất cả
+                snprintf(message, sizeof(message), "/msg:%s:%s:%s:%s\n",
+                        conv->messages[i].timestamp,
+                        conv->messages[i].sender,
+                        "all",
                         conv->messages[i].content);
+                printf("Debug: Sending public message: %s", message);
+                if (send(client_sock, message, strlen(message), 0) < 0) {
+                    printf("Error: Failed to send public message\n");
+                }
             }
-            send(client_sock, message, strlen(message), 0);
         }
+        printf("Debug: Finished sending conversation history\n");
+    } else {
+        printf("Debug: No conversation found for target %s\n", target);
     }
     
     pthread_mutex_unlock(&conversations_mutex);
-    (void)username; // Silence unused parameter warning
 } 
