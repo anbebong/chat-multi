@@ -4,3 +4,4 @@ server.out
 users.txt
 conversations.txt
 conversations/
+*.a

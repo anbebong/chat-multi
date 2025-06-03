@@ -82,15 +82,15 @@ void save_conversation(const server_message_t *msg) {
     
     pthread_mutex_unlock(&conversations_mutex);
     
-    // Save to conversation file
+    // Save to conversation file using new format: MSG|timestamp|sender|recipient|content|is_private
     char filename[BUFFER_SIZE];
     get_conversation_filename(msg->sender, msg->recipient, filename);
     
     FILE *fp = fopen(filename, "a");
     if (fp != NULL) {
-        fprintf(fp, "%s:%s:%s:%s:%d\n",
-                msg->sender, msg->recipient, msg->content, 
-                msg->timestamp, msg->is_private);
+        fprintf(fp, "MSG|%s|%s|%s|%s|%d\n",
+                msg->timestamp, msg->sender, msg->recipient, 
+                msg->content, msg->is_private);
         fclose(fp);
     } else {
         printf("Error: Could not open conversation file %s for writing\n", filename);
@@ -153,36 +153,26 @@ void migrate_old_conversations() {
 }
 
 void load_conversations() {
-    // Tạo thư mục conversations nếu chưa tồn tại
-    mkdir("conversations", 0755);
-    
-    // Chuyển dữ liệu từ file cũ sang các file mới
-    migrate_old_conversations();
-    
-    // Đọc tất cả file trong thư mục conversations
     DIR *dir = opendir("conversations");
     if (dir == NULL) {
         printf("Error: Could not open conversations directory\n");
         return;
     }
     
-    printf("Debug: Starting to load conversations...\n");
-    
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        // Bỏ qua . và ..
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        // Skip . and .. directories
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
             continue;
         }
         
-        // Chỉ đọc file .txt
-        if (strstr(entry->d_name, ".txt") == NULL) {
+        // Skip non-txt files
+        if (strstr(ent->d_name, ".txt") == NULL) {
             continue;
         }
         
         char filename[BUFFER_SIZE];
-        snprintf(filename, sizeof(filename), "conversations/%s", entry->d_name);
-        printf("Debug: Loading conversation from %s\n", filename);
+        snprintf(filename, sizeof(filename), "conversations/%s", ent->d_name);
         
         FILE *fp = fopen(filename, "r");
         if (fp == NULL) {
@@ -190,26 +180,24 @@ void load_conversations() {
             continue;
         }
         
-        // Parse tên file để lấy thông tin người tham gia
-        char *participant1;
-        char *participant2 = NULL;
+        // Parse participants from filename
+        char participant1[MAX_USERNAME] = "";
+        char participant2[MAX_USERNAME] = "";
         
-        if (strcmp(entry->d_name, "all.txt") == 0) {
-            participant1 = "all";
+        if (strcmp(ent->d_name, "all.txt") == 0) {
+            strcpy(participant1, "all");
+            participant2[0] = '\0';
         } else {
-            participant1 = strtok(entry->d_name, "_");
-            participant2 = strtok(NULL, ".");
-            if (participant2 != NULL) {
-                // Loại bỏ phần .txt
-                char *dot = strchr(participant2, '.');
-                if (dot != NULL) {
-                    *dot = '\0';
-                }
+            char *p1 = strtok(ent->d_name, "_");
+            char *p2 = strtok(NULL, ".");
+            if (p1 && p2) {
+                strncpy(participant1, p1, MAX_USERNAME - 1);
+                strncpy(participant2, p2, MAX_USERNAME - 1);
             }
         }
         
-        printf("Debug: Conversation participants: %s and %s\n", 
-               participant1, participant2 ? participant2 : "all");
+        printf("Debug: Loading conversation between %s and %s\n", 
+               participant1, participant2 ? participant2 : "none");
         
         // Tạo conversation mới
         if (conversation_count < MAX_CONVERSATIONS) {
@@ -227,43 +215,37 @@ void load_conversations() {
                 // Remove newline
                 line[strcspn(line, "\n")] = 0;
                 
-                // Parse line
-                char *sender = strtok(line, ":");
-                if (sender != NULL) {
-                    char *recipient = strtok(NULL, ":");
-                    if (recipient != NULL) {
-                        char *content = strtok(NULL, ":");
-                        if (content != NULL) {
-                            // Tìm vị trí của timestamp (sau content)
-                            char *timestamp_start = content + strlen(content) + 1;
-                            if (timestamp_start < line + strlen(line)) {
-                                // Tìm vị trí của is_private (sau timestamp)
-                                char *is_private_start = strrchr(timestamp_start, ':');
-                                int is_private = 0;
-                                
-                                if (is_private_start != NULL) {
-                                    // Có trường is_private
-                                    *is_private_start = '\0';  // Cắt timestamp
-                                    is_private = atoi(is_private_start + 1);
-                                    is_private = (is_private != 0) ? 1 : 0;
-                                } else {
-                                    // Không có trường is_private
-                                    is_private = (strcmp(recipient, "all") != 0);
-                                }
-                                
-                                server_message_t *msg = &conv->messages[conv->message_count++];
-                                strcpy(msg->sender, sender);
-                                strcpy(msg->recipient, recipient);
-                                strcpy(msg->content, content);
-                                strcpy(msg->timestamp, timestamp_start);
-                                msg->is_private = is_private;
-                                
-                                msg_count++;
-                                printf("Debug: Loaded message %d - From: %s, To: %s, Content: %s, Time: %s, Private: %d\n",
-                                       msg_count, msg->sender, msg->recipient, msg->content, 
-                                       msg->timestamp, msg->is_private);
-                            }
+                // Parse line using new format: MSG|timestamp|sender|recipient|content|is_private
+                if (strncmp(line, "MSG|", 4) == 0) {
+                    char *msg_content = line + 4;  // Skip "MSG|"
+                    
+                    // Parse message components using strtok with | as delimiter
+                    char *timestamp = strtok(msg_content, "|");
+                    char *sender = strtok(NULL, "|");
+                    char *recipient = strtok(NULL, "|");
+                    char *content = strtok(NULL, "|");
+                    char *is_private_str = strtok(NULL, "|");
+                    
+                    if (timestamp && sender && recipient && content) {
+                        int is_private = 0;
+                        if (is_private_str) {
+                            is_private = atoi(is_private_str);
+                            is_private = (is_private != 0) ? 1 : 0;
+                        } else {
+                            is_private = (strcmp(recipient, "all") != 0);
                         }
+                        
+                        server_message_t *msg = &conv->messages[conv->message_count++];
+                        strcpy(msg->sender, sender);
+                        strcpy(msg->recipient, recipient);
+                        strcpy(msg->content, content);
+                        strcpy(msg->timestamp, timestamp);
+                        msg->is_private = is_private;
+                        
+                        msg_count++;
+                        printf("Debug: Loaded message %d - From: %s, To: %s, Content: %s, Time: %s, Private: %d\n",
+                               msg_count, msg->sender, msg->recipient, msg->content, 
+                               msg->timestamp, msg->is_private);
                     }
                 }
             }

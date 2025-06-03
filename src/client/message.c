@@ -98,19 +98,29 @@ void *receive_messages(void *arg) {
             continue;
         }
         
-        // Handle normal messages
-        if (strncmp(buffer, "/msg:", 5) == 0) {
-            char *msg_content = buffer + 5;  // Bỏ qua "/msg:"
-            pthread_mutex_lock(&display_mutex);
-            printf("\r\033[K%s\n", msg_content);
-            fflush(stdout);
-            pthread_mutex_unlock(&display_mutex);
+        // Handle normal messages - new format "MSG|timestamp|sender|recipient|content"
+        if (strncmp(buffer, "MSG|", 4) == 0) {
+            char *msg_content = buffer + 4;  // Skip "MSG|"
+            
+            // Parse message components using strtok with | as delimiter
+            char *timestamp = strtok(msg_content, "|");
+            char *sender = strtok(NULL, "|");
+            char *recipient = strtok(NULL, "|");
+            char *content = strtok(NULL, "\n");  // Get remaining content
+            
+            if (timestamp && sender && recipient && content) {
+                pthread_mutex_lock(&display_mutex);
+                printf("\r\033[K[%s] [%s]>[%s]: %s\n", 
+                       timestamp, sender, recipient, content);
+                fflush(stdout);
+                pthread_mutex_unlock(&display_mutex);
+            }
             continue;
         }
         
         // Handle system messages
-        if (strncmp(buffer, "/system:", 8) == 0) {
-            char *content = buffer + 8;  // Skip "/system:"
+        if (strncmp(buffer, "SYS|", 4) == 0) {
+            char *content = buffer + 4;  // Skip "SYS|"
             pthread_mutex_lock(&display_mutex);
             printf("\r\033[KSystem: %s\n", content);
             fflush(stdout);
@@ -160,9 +170,8 @@ void send_message(int sockfd, const char *message, const char *recipient) {
         return;
     }
     
-    // Normal message - send in format "sender:recipient:content"
-    // Server sẽ tự thêm timestamp và định dạng lại thành /msg:timestamp:sender:recipient:content
-    snprintf(buffer, sizeof(buffer), "%s:%s:%s", my_username, recipient, message);
+    // Normal message - send in format "MSG|sender|recipient|content"
+    snprintf(buffer, sizeof(buffer), "MSG|%s|%s|%s", my_username, recipient, message);
     if (send(sockfd, buffer, strlen(buffer), 0) < 0) {
         perror("Failed to send message");
     }

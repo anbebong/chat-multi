@@ -193,7 +193,7 @@ int main() {
         // Send normal message
         if (strlen(input_buffer) > 0) {
             char message[BUFFER_SIZE + MAX_USERNAME * 2];
-            snprintf(message, sizeof(message), "%s:%s:%s", my_username, current_recipient, input_buffer);
+            snprintf(message, sizeof(message), "MSG|%s|%s|%s", my_username, current_recipient, input_buffer);
             
             // Display our own message immediately
             print_message(my_username, input_buffer, 0, current_recipient);

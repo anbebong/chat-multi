@@ -91,9 +91,9 @@ void broadcast_message(const char *sender, const char *content, const char *reci
         save_conversation(&msg);
     }
     
-    // Send message to clients
+    // Send message to clients using new format: MSG|timestamp|sender|recipient|content
     char message[BUFFER_SIZE + MAX_USERNAME * 2];
-    snprintf(message, sizeof(message), "/msg:%s:%s:%s:%s", 
+    snprintf(message, sizeof(message), "MSG|%s|%s|%s|%s", 
              msg.timestamp, sender, recipient, content);
     
     for (int i = 0; i < MAX_CLIENTS; i++) {
@@ -164,7 +164,7 @@ void send_conversation_history(int client_sock, const char *target, const char *
                 // Tin nhắn riêng tư: chỉ gửi nếu người dùng là người gửi hoặc người nhận
                 if (strcmp(username, conv->messages[i].sender) == 0 ||
                     strcmp(username, conv->messages[i].recipient) == 0) {
-                    snprintf(message, sizeof(message), "/msg:%s:%s:%s:%s\n",
+                    snprintf(message, sizeof(message), "MSG|%s|%s|%s|%s\n",
                             conv->messages[i].timestamp,
                             conv->messages[i].sender,
                             conv->messages[i].recipient,
@@ -176,7 +176,7 @@ void send_conversation_history(int client_sock, const char *target, const char *
                 }
             } else {
                 // Tin nhắn công khai: gửi tất cả
-                snprintf(message, sizeof(message), "/msg:%s:%s:%s:%s\n",
+                snprintf(message, sizeof(message), "MSG|%s|%s|%s|%s\n",
                         conv->messages[i].timestamp,
                         conv->messages[i].sender,
                         "all",

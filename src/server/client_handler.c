@@ -285,9 +285,6 @@ void *handle_client(void *arg) {
     char buffer[BUFFER_SIZE];
     char client_username[MAX_USERNAME];
     char password[MAX_PASSWORD];
-    char content[BUFFER_SIZE - MAX_USERNAME * 2 - 3];
-    char recipient[MAX_USERNAME];
-    char sender[MAX_USERNAME];
     
     // Get username and password
     memset(client_username, 0, MAX_USERNAME);
@@ -339,7 +336,7 @@ void *handle_client(void *arg) {
     
     // Send join message
     char message[BUFFER_SIZE];
-    snprintf(message, BUFFER_SIZE, "System:all:%s has joined the chat\n", client_username);
+    snprintf(message, BUFFER_SIZE, "SYS|%s has joined the chat\n", client_username);
     broadcast_message_to_socket(message, client->sockfd, "all");
     
     // Send current user list to the new client
@@ -397,66 +394,6 @@ void *handle_client(void *arg) {
             continue;
         }
         
-        // Parse message format: "USERNAME:RECIPIENT:CONTENT"
-        char *first_colon = strchr(buffer, ':');
-        if (first_colon != NULL) {
-            *first_colon = '\0';
-            strncpy(sender, buffer, MAX_USERNAME - 1);
-            sender[MAX_USERNAME - 1] = '\0';
-            
-            char *second_colon = strchr(first_colon + 1, ':');
-            if (second_colon != NULL) {
-                *second_colon = '\0';
-                strncpy(recipient, first_colon + 1, MAX_USERNAME - 1);
-                recipient[MAX_USERNAME - 1] = '\0';
-                
-                // Get the actual message content
-                strncpy(content, second_colon + 1, BUFFER_SIZE - 1);
-                content[BUFFER_SIZE - 1] = '\0';
-                
-                printf("Debug: Đã nhận tin nhắn - Từ: %s, Đến: %s, Nội dung: %s\n", 
-                       sender, recipient, content);
-                
-                // Gửi tin nhắn theo định dạng mới: /msg:timestamp:sender:recipient:content
-                char message[BUFFER_SIZE];
-                time_t now = time(NULL);
-                struct tm *t = localtime(&now);
-                char timestamp[20];
-                strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", t);
-                
-                // Tạo tin nhắn theo định dạng mới
-                snprintf(message, sizeof(message), "/msg:%s:%s:%s:%s", 
-                        timestamp, sender, recipient, content);
-                
-                // Gửi tin nhắn đến các client phù hợp
-                pthread_mutex_lock(&clients_mutex);
-                for (int i = 0; i < MAX_CLIENTS; i++) {
-                    if (!clients[i].active) continue;
-                    if (strcmp(clients[i].username, sender) == 0) continue;  // Bỏ qua người gửi
-                    
-                    // Nếu là tin nhắn riêng tư, chỉ gửi đến người nhận
-                    if (strcmp(recipient, "all") != 0) {
-                        if (strcmp(clients[i].username, recipient) == 0) {
-                            send(clients[i].sockfd, message, strlen(message), 0);
-                        }
-                    } else {
-                        // Nếu là tin nhắn công khai, gửi đến tất cả mọi người trừ người gửi
-                        send(clients[i].sockfd, message, strlen(message), 0);
-                    }
-                }
-                pthread_mutex_unlock(&clients_mutex);
-                
-                // Lưu tin nhắn vào lịch sử hội thoại
-                server_message_t msg;
-                strncpy(msg.sender, sender, MAX_USERNAME - 1);
-                strncpy(msg.recipient, recipient, MAX_USERNAME - 1);
-                strncpy(msg.content, content, BUFFER_SIZE - 1);
-                strncpy(msg.timestamp, timestamp, sizeof(msg.timestamp));
-                msg.is_private = (strcmp(recipient, "all") != 0);
-                save_conversation(&msg);
-            }
-        }
-        
         // Handle history command
         if (strncmp(buffer, "/history ", 9) == 0) {
             char *target = buffer + 9;
@@ -465,6 +402,28 @@ void *handle_client(void *arg) {
             }
             continue;
         }
+        
+        // Parse message format: "MSG|sender|recipient|content"
+        if (strncmp(buffer, "MSG|", 4) == 0) {
+            char *msg_content = buffer + 4;  // Skip "MSG|"
+            
+            // Parse message components using strtok with | as delimiter
+            char *sender = strtok(msg_content, "|");
+            char *recipient = strtok(NULL, "|");
+            char *content = strtok(NULL, "\n");  // Get remaining content
+            
+            if (sender && recipient && content) {
+                printf("Debug: Đã nhận tin nhắn - Từ: %s, Đến: %s, Nội dung: %s\n", 
+                       sender, recipient, content);
+                
+                // Broadcast message to appropriate clients
+                broadcast_message(sender, content, recipient);
+            }
+            continue;
+        }
+        
+        // Unknown message format
+        printf("Debug: Received unknown message format: %s\n", buffer);
     }
     
     pthread_exit(NULL);
