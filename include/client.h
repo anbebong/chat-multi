@@ -3,6 +3,35 @@
 
 #include "common.h"
 
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <windows.h>
+    #include <process.h>
+    #include <io.h>
+    #pragma comment(lib, "ws2_32.lib")
+    #define close(s) closesocket(s)
+    #define sleep(s) Sleep(s * 1000)
+    typedef HANDLE pthread_t;
+    typedef CRITICAL_SECTION pthread_mutex_t;
+    #define pthread_mutex_init(m, a) InitializeCriticalSection(m)
+    #define pthread_mutex_destroy(m) DeleteCriticalSection(m)
+    #define pthread_mutex_lock(m) EnterCriticalSection(m)
+    #define pthread_mutex_unlock(m) LeaveCriticalSection(m)
+    #define pthread_create(t, a, f, d) (*t = (HANDLE)_beginthreadex(NULL, 0, f, d, 0, NULL))
+    #define pthread_join(t, r) WaitForSingleObject(t, INFINITE)
+#else
+    #include <sys/socket.h>
+    #include <arpa/inet.h>
+    #include <unistd.h>
+    #include <pthread.h>
+    #include <dirent.h>
+#endif
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
 // Client-specific constants
 #define MAX_USERNAME 32
 #define MAX_MESSAGES 1000

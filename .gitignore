@@ -5,3 +5,4 @@ users.txt
 conversations.txt
 conversations/
 *.a
+bin/

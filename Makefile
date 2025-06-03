@@ -1,79 +1,99 @@
-CC = gcc
-CFLAGS = -Wall -Wextra -I./include
-LDFLAGS = -static -pthread
+# Compiler settings
+ifeq ($(CROSS),win32)
+    # Cross-compile for 32-bit Windows
+    CC = i686-w64-mingw32-gcc
+    CFLAGS = -Wall -Wextra -I./include
+    LDFLAGS = -lws2_32
+    RM = rm -f
+    MKDIR = mkdir -p
+    RMDIR = rm -rf
+    EXE_EXT = .exe
+else ifeq ($(CROSS),win64)
+    # Cross-compile for 64-bit Windows
+    CC = x86_64-w64-mingw32-gcc
+    CFLAGS = -Wall -Wextra -I./include
+    LDFLAGS = -lws2_32
+    RM = rm -f
+    MKDIR = mkdir -p
+    RMDIR = rm -rf
+    EXE_EXT = .exe
+else ifeq ($(OS),Windows_NT)
+    # Native Windows build
+    CC = gcc
+    CFLAGS = -Wall -Wextra -I./include
+    LDFLAGS = -lws2_32
+    RM = del /Q /F
+    MKDIR = mkdir
+    RMDIR = rmdir /S /Q
+    EXE_EXT = .exe
+else
+    # Native Linux build
+    CC = gcc
+    CFLAGS = -Wall -Wextra -I./include
+    LDFLAGS = -pthread
+    RM = rm -f
+    MKDIR = mkdir -p
+    RMDIR = rm -rf
+    EXE_EXT =
+endif
 
-# Source directories
-CLIENT_SRC = src/client
-SERVER_SRC = src/server
+SRC_DIR = src
+OBJ_DIR = obj
+BIN_DIR = bin
 
-# Client source files
-CLIENT_SOURCES = $(CLIENT_SRC)/main.c \
-                 $(CLIENT_SRC)/message.c \
-                 $(CLIENT_SRC)/conversation.c \
-                 $(CLIENT_SRC)/display.c
+# Source files
+CLIENT_SRC = $(SRC_DIR)/client/main.c \
+             $(SRC_DIR)/client/message.c \
+             $(SRC_DIR)/client/conversation.c \
+             $(SRC_DIR)/client/display.c
 
-# Server source files
-SERVER_SOURCES = $(SERVER_SRC)/main.c \
-                 $(SERVER_SRC)/message.c \
-                 $(SERVER_SRC)/storage.c \
-                 $(SERVER_SRC)/client_handler.c
+SERVER_SRC = $(SRC_DIR)/server/main.c \
+             $(SRC_DIR)/server/client_handler.c \
+             $(SRC_DIR)/server/message.c \
+             $(SRC_DIR)/server/storage.c
 
 # Object files
-CLIENT_OBJECTS = $(CLIENT_SOURCES:.c=.o)
-SERVER_OBJECTS = $(SERVER_SOURCES:.c=.o)
+CLIENT_OBJ = $(CLIENT_SRC:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
+SERVER_OBJ = $(SERVER_SRC:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
-# Tên các file static library
-SERVER_LIB = libserver.a
+# Executables
+CLIENT_BIN = $(BIN_DIR)/client$(EXE_EXT)
+SERVER_BIN = $(BIN_DIR)/server$(EXE_EXT)
+
+# Libraries
 CLIENT_LIB = libclient.a
+SERVER_LIB = libserver.a
 
-# Tên các file thực thi
-SERVER = server.out
-CLIENT = client.out
+# Targets
+all: directories $(CLIENT_BIN) $(SERVER_BIN)
 
-all: $(SERVER) $(CLIENT)
+# Cross-compilation targets
+win32: CROSS=win32
+win32: all
 
-# Build static libraries
-$(SERVER_LIB): $(SERVER_OBJECTS)
-	$(AR) rcs $@ $^
+win64: CROSS=win64
+win64: all
 
-$(CLIENT_LIB): $(CLIENT_OBJECTS)
-	$(AR) rcs $@ $^
+directories:
+	$(MKDIR) $(OBJ_DIR)
+	$(MKDIR) $(OBJ_DIR)/client
+	$(MKDIR) $(OBJ_DIR)/server
+	$(MKDIR) $(BIN_DIR)
 
-# Link statically
-$(SERVER): $(SERVER_LIB)
-	$(CC) $(LDFLAGS) -o $@ $^
+$(CLIENT_BIN): $(CLIENT_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-$(CLIENT): $(CLIENT_LIB)
-	$(CC) $(LDFLAGS) -o $@ $^
+$(SERVER_BIN): $(SERVER_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-# Client object files
-$(CLIENT_SRC)/main.o: $(CLIENT_SRC)/main.c include/client.h include/common.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(CLIENT_SRC)/message.o: $(CLIENT_SRC)/message.c include/client.h include/common.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(CLIENT_SRC)/conversation.o: $(CLIENT_SRC)/conversation.c include/client.h include/common.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(CLIENT_SRC)/display.o: $(CLIENT_SRC)/display.c include/client.h include/common.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Server object files
-$(SERVER_SRC)/main.o: $(SERVER_SRC)/main.c include/server.h include/common.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(SERVER_SRC)/message.o: $(SERVER_SRC)/message.c include/server.h include/common.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(SERVER_SRC)/storage.o: $(SERVER_SRC)/storage.c include/server.h include/common.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(SERVER_SRC)/client_handler.o: $(SERVER_SRC)/client_handler.c include/server.h include/common.h
-	$(CC) $(CFLAGS) -c $< -o $@
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(SERVER) $(CLIENT) $(SERVER_LIB) $(CLIENT_LIB) $(SERVER_OBJECTS) $(CLIENT_OBJECTS)
-clean-deps:
-	rm -f $(SERVER_OBJECTS) $(CLIENT_OBJECTS)
-.PHONY: all clean clean-deps
+	$(RM) $(CLIENT_OBJ) $(SERVER_OBJ)
+	$(RM) $(CLIENT_BIN) $(SERVER_BIN)
+	$(RM) $(CLIENT_LIB) $(SERVER_LIB)
+	$(RMDIR) $(OBJ_DIR)
+	$(RMDIR) $(BIN_DIR)
+
+.PHONY: all clean directories win32 win64

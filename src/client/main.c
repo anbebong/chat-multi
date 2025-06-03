@@ -9,6 +9,10 @@
 #include <time.h>
 #include "client.h"
 
+#ifdef _WIN32
+#include <winsock2.h>
+#endif
+
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 56001
 
@@ -25,6 +29,15 @@ char my_username[MAX_USERNAME];
 char current_recipient[MAX_USERNAME] = "all";
 
 int main() {
+#ifdef _WIN32
+    // Initialize Winsock
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        printf("WSAStartup failed\n");
+        return 1;
+    }
+#endif
+
     struct sockaddr_in serv_addr;
     pthread_t receive_thread;
     char input_buffer[BUFFER_SIZE];
@@ -209,5 +222,10 @@ int main() {
     }
     
     close(sockfd);
+
+#ifdef _WIN32
+    // Cleanup Winsock
+    WSACleanup();
+#endif
     return 0;
 }
